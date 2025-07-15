@@ -13,7 +13,12 @@ import {
   isTextPart,
   createDefaultSafetyRatings,
   EnhancedTool,
-  GroundingMetadata
+  GroundingMetadata,
+  CodeExecutionTool,
+  ExecutableCode,
+  CodeExecutionResult,
+  CodeExecutionPart,
+  CodeExecutionResultPart
 } from '../types/vertex-ai';
 import { advancedFeaturesService } from './advanced-features';
 import { contextCachingService } from './context-caching';
@@ -247,9 +252,16 @@ export class MockGeminiService {
     // Process enhanced tools (grounding, code execution)
     let groundingMetadata: GroundingMetadata | undefined;
     let enhancedContent = '';
+    let hasCodeExecutionTool = false;
     
     if (request.tools && request.tools.length > 0) {
       const inputText = this.extractTextFromContents(effectiveContents);
+      
+      // Check for code execution tool
+      hasCodeExecutionTool = request.tools.some((tool: any) => 
+        tool.codeExecution !== undefined
+      );
+      
       const toolResult = await advancedFeaturesService.processEnhancedTools(
         request.tools as EnhancedTool[], 
         inputText
@@ -925,5 +937,93 @@ export class MockGeminiService {
         model.id === modelName
       );
     }
+  }
+
+  // Code execution simulation
+  private simulateCodeExecution(code: string): CodeExecutionResult {
+    try {
+      // Simulate Python code execution with some basic patterns
+      const cleanCode = code.trim();
+      
+      // Handle print statements
+      const printMatches = cleanCode.match(/print\s*\(\s*([^)]+)\s*\)/g);
+      if (printMatches) {
+        const outputs = printMatches.map(match => {
+          const content = match.match(/print\s*\(\s*([^)]+)\s*\)/)?.[1] || '';
+          // Remove quotes and evaluate simple expressions
+          return content.replace(/['"]/g, '');
+        });
+        return {
+          outcome: 'OUTCOME_OK',
+          output: outputs.join('\n') + '\n'
+        };
+      }
+
+      // Handle simple math expressions
+      if (/^\s*\d+[\+\-\*\/\s\d]*\d*\s*$/.test(cleanCode)) {
+        try {
+          // Simple arithmetic evaluation (be careful in real implementation)
+          const result = eval(cleanCode.replace(/[^0-9+\-*/().\s]/g, ''));
+          return {
+            outcome: 'OUTCOME_OK',
+            output: `${result}\n`
+          };
+        } catch {
+          return {
+            outcome: 'OUTCOME_FAILED',
+            output: 'SyntaxError: invalid syntax\n'
+          };
+        }
+      }
+
+      // Handle variable assignments and basic operations
+      if (cleanCode.includes('=') || cleanCode.includes('for ') || cleanCode.includes('if ')) {
+        return {
+          outcome: 'OUTCOME_OK',
+          output: 'Code executed successfully (simulated)\n'
+        };
+      }
+
+      // Default success for other code
+      return {
+        outcome: 'OUTCOME_OK',
+        output: 'Code executed successfully\n'
+      };
+
+    } catch (error) {
+      return {
+        outcome: 'OUTCOME_FAILED',
+        output: `Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`
+      };
+    }
+  }
+
+  // Enhanced content processing with code execution
+  private processContentWithCodeExecution(content: Content): Content {
+    if (!content.parts) return content;
+
+    const processedParts: Part[] = [];
+    
+    for (const part of content.parts) {
+      processedParts.push(part);
+      
+      // Check if this part contains executable code
+      const codeExecutionPart = part as CodeExecutionPart;
+      if (codeExecutionPart.executableCode) {
+        // Simulate code execution
+        const result = this.simulateCodeExecution(codeExecutionPart.executableCode.code);
+        
+        // Add execution result as next part
+        const resultPart: CodeExecutionResultPart = {
+          codeExecutionResult: result
+        };
+        processedParts.push(resultPart as Part);
+      }
+    }
+
+    return {
+      ...content,
+      parts: processedParts
+    };
   }
 } 

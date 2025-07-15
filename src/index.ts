@@ -10,6 +10,8 @@ import adminRoutes from './routes/admin';
 import filesRoutes from './routes/files';
 import publisherRoutes from './routes/publishers';
 import cachedContentRoutes from './routes/cached-content';
+import liveAPIRoutes, { setupLiveAPIWebSocket } from './routes/live-api';
+import batchRoutes from './routes/batch';
 import { createGoogleCloudError } from './middleware/google-cloud-errors';
 import { 
   createMockGeminiService, 
@@ -158,6 +160,8 @@ app.use('/', googleAiRoutes);       // Google AI routes (mounted at root)
 app.use('/v1', filesRoutes);
 app.use('/v1', publisherRoutes);
 app.use('/v1', cachedContentRoutes); // Context Caching routes
+app.use('/v1', liveAPIRoutes); // Live API routes
+app.use('/v1', batchRoutes); // Batch processing routes
 app.use('/admin', adminRoutes);
 
 // Health check endpoint
@@ -189,7 +193,7 @@ async function startServer() {
   // Initialize Google AI services
   await initializeGoogleAIServices();
   
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`🚀 Mock Gemini API server running on port ${PORT}`);
     console.log(`📖 Documentation: http://localhost:${PORT}/admin/docs`);
     console.log(`🏥 Health check: http://localhost:${PORT}/health`);
@@ -210,6 +214,13 @@ async function startServer() {
     console.log(`   • Vertex AI: Bearer token (Authorization: Bearer <token>)`);
     console.log(`   • Google AI: API key (x-goog-api-key: <key> or ?key=<key>)`);
   });
+
+  // Setup WebSocket for Live API
+  try {
+    setupLiveAPIWebSocket(server);
+  } catch (error) {
+    console.warn('⚠️  Live API WebSocket setup failed:', error);
+  }
 }
 
 startServer().catch(console.error);

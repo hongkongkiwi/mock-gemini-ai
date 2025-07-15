@@ -165,6 +165,41 @@ router.get('/health', (req: Request, res: Response): void => {
   });
 });
 
+// Get available models
+router.get('/models', (req: Request, res: Response): void => {
+  try {
+    const mockService = getServiceInstance(req);
+    const models = mockService.getModels();
+    res.json({ models });
+  } catch (error) {
+    console.error('Error getting models:', error);
+    res.status(500).json({
+      error: 'Internal server error'
+    });
+  }
+});
+
+// Get service statistics
+router.get('/stats', (req: Request, res: Response): void => {
+  try {
+    const mockService = getServiceInstance(req);
+    const presetResponses = mockService.getPresetResponses();
+    res.json({
+      stats: {
+        totalRequests: 0, // In a real implementation, this would be tracked
+        presetResponses: presetResponses.length,
+        availableModels: mockService.getModels().length,
+        uptime: process.uptime()
+      }
+    });
+  } catch (error) {
+    console.error('Error getting stats:', error);
+    res.status(500).json({
+      error: 'Internal server error'
+    });
+  }
+});
+
 // API documentation endpoint
 router.get('/docs', (req: Request, res: Response): void => {
   res.json({

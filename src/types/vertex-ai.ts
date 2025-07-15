@@ -88,9 +88,7 @@ import {
 
 // Additional types for advanced features not in official SDK yet
 export interface CodeExecutionTool {
-  codeExecution: {
-    language: 'PYTHON';
-  };
+  codeExecution?: {}; // Empty object enables code execution
 }
 
 export interface GoogleSearchTool {
@@ -99,20 +97,23 @@ export interface GoogleSearchTool {
   };
 }
 
-export interface CodeExecutionPart {
-  executableCode: {
-    language: 'PYTHON';
-    code: string;
-  };
+export interface ExecutableCode {
+  language: 'PYTHON'; // Currently only Python supported
+  code: string;
 }
 
 export interface CodeExecutionResult {
-  outcome: 'OK' | 'FAILED';
-  output: string;
+  outcome: 'OUTCOME_OK' | 'OUTCOME_FAILED' | 'OUTCOME_DEADLINE_EXCEEDED';
+  output: string; // stdout on success, stderr on failure
 }
 
-export interface ExecutedCodePart {
-  codeExecutionResult: CodeExecutionResult;
+// Code execution parts - used within existing Part interface
+export interface CodeExecutionPart {
+  executableCode?: ExecutableCode;
+}
+
+export interface CodeExecutionResultPart {
+  codeExecutionResult?: CodeExecutionResult;
 }
 
 // Enhanced Tool type with new tool types
