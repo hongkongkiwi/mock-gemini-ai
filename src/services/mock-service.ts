@@ -11,8 +11,14 @@ import {
   HarmSeverity,
   FinishReason,
   isTextPart,
-  createDefaultSafetyRatings
+  createDefaultSafetyRatings,
+  EnhancedTool,
+  GroundingMetadata
 } from '../types/vertex-ai';
+import { advancedFeaturesService } from './advanced-features';
+import { contextCachingService } from './context-caching';
+import { systemInstructionsService } from './system-instructions';
+import { thinkingModeService } from './thinking-mode';
 import {
   PresetResponse,
   defaultPresetResponses,
@@ -209,10 +215,53 @@ export class MockGeminiService {
     const effectiveProjectId = projectId || this.config.googleCloud.defaultProjectId;
     const effectiveLocation = location || this.config.googleCloud.defaultLocation;
 
+    // Handle cached content if present
+    let effectiveContents = request.contents;
+    let cacheTokenCount = 0;
+    
+    if (request.cachedContent) {
+      const cacheId = request.cachedContent.split('/').pop();
+      if (cacheId) {
+        const cacheResult = await contextCachingService.applyCachedContent(cacheId, request.contents);
+        effectiveContents = cacheResult.allContents;
+        cacheTokenCount = cacheResult.cacheTokenCount;
+      }
+    }
+
+    // Apply system instructions
+    let systemInstruction: Content | undefined;
+    if (request.systemInstruction) {
+      if (typeof request.systemInstruction === 'string') {
+        systemInstruction = systemInstructionsService.createSystemInstruction(request.systemInstruction);
+      } else {
+        systemInstruction = request.systemInstruction;
+      }
+    }
+    
+    effectiveContents = systemInstructionsService.applySystemInstruction(
+      effectiveContents,
+      systemInstruction,
+      modelName
+    );
+
+    // Process enhanced tools (grounding, code execution)
+    let groundingMetadata: GroundingMetadata | undefined;
+    let enhancedContent = '';
+    
+    if (request.tools && request.tools.length > 0) {
+      const inputText = this.extractTextFromContents(effectiveContents);
+      const toolResult = await advancedFeaturesService.processEnhancedTools(
+        request.tools as EnhancedTool[], 
+        inputText
+      );
+      groundingMetadata = toolResult.groundingMetadata;
+      enhancedContent = toolResult.additionalContent || '';
+    }
+
     // Validate input token limits
     const model = this.getModelByName(modelName, effectiveProjectId, effectiveLocation);
     if (model) {
-      const inputText = this.extractTextFromContents(request.contents);
+      const inputText = this.extractTextFromContents(effectiveContents);
       const inputTokens = this.estimateTokens(inputText);
       
       if (inputTokens > model.inputTokenLimit) {
@@ -228,7 +277,7 @@ export class MockGeminiService {
     }
 
     // Extract text from the request to match against presets
-    const inputText = this.extractTextFromContents(request.contents);
+    const inputText = this.extractTextFromContents(effectiveContents);
     
     // Find matching preset response
     const matchedResponse = this.findMatchingPreset(inputText);
@@ -243,6 +292,60 @@ export class MockGeminiService {
     } else {
       // Return fallback response if no match found
       response = defaultFallbackResponse;
+    }
+
+    // Enhance response with grounding content if available
+    if (enhancedContent && response.candidates && response.candidates[0]) {
+      const originalText = response.candidates[0].content.parts[0]?.text || '';
+      response.candidates[0].content.parts[0] = {
+        text: enhancedContent + '\n\n' + originalText
+      };
+    }
+
+    // Apply system instruction behavioral enhancements
+    if (response.candidates && response.candidates[0] && response.candidates[0].content.parts[0]) {
+      const originalText = response.candidates[0].content.parts[0].text || '';
+      const enhancedText = systemInstructionsService.enhanceResponseWithSystemBehavior(
+        originalText,
+        systemInstruction,
+        modelName
+      );
+      if (enhancedText !== originalText) {
+        response.candidates[0].content.parts[0] = {
+          text: enhancedText
+        };
+      }
+    }
+
+    // Add grounding metadata if available
+    if (groundingMetadata && response.candidates && response.candidates[0]) {
+      response.candidates[0].groundingMetadata = groundingMetadata;
+    }
+
+    // Process code execution in response
+    if (response.candidates && response.candidates[0] && response.candidates[0].content.parts) {
+      response.candidates[0].content.parts = await advancedFeaturesService.processCodeExecutionParts(
+        response.candidates[0].content.parts
+      );
+    }
+
+    // Add thinking mode if enabled and supported
+    if (response.candidates && response.candidates[0] && response.candidates[0].content.parts) {
+      if (thinkingModeService.shouldEnableThinking(request, modelName)) {
+        const inputText = this.extractTextFromContents(effectiveContents);
+        response.candidates[0].content.parts = thinkingModeService.addThinkingToResponse(
+          response.candidates[0].content.parts,
+          inputText,
+          modelName
+        );
+      }
+    }
+
+    // Update usage metadata to include cache tokens
+    if (response.usageMetadata && cacheTokenCount > 0) {
+      response.usageMetadata.cachedContentTokenCount = cacheTokenCount;
+      response.usageMetadata.totalTokenCount = 
+        (response.usageMetadata.totalTokenCount || 0) + cacheTokenCount;
     }
 
     // Trim output if model limits are specified

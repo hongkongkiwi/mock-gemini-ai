@@ -86,6 +86,129 @@ import {
   HarmSeverity,
 } from '@google-cloud/vertexai';
 
+// Additional types for advanced features not in official SDK yet
+export interface CodeExecutionTool {
+  codeExecution: {
+    language: 'PYTHON';
+  };
+}
+
+export interface GoogleSearchTool {
+  googleSearchRetrieval: {
+    disableAttribution?: boolean;
+  };
+}
+
+export interface CodeExecutionPart {
+  executableCode: {
+    language: 'PYTHON';
+    code: string;
+  };
+}
+
+export interface CodeExecutionResult {
+  outcome: 'OK' | 'FAILED';
+  output: string;
+}
+
+export interface ExecutedCodePart {
+  codeExecutionResult: CodeExecutionResult;
+}
+
+// Enhanced Tool type with new tool types
+export type EnhancedTool = Tool | CodeExecutionTool | GoogleSearchTool;
+
+// Context Caching types
+export interface CachedContentRequest {
+  model: string;
+  systemInstruction?: Content;
+  contents?: Content[];
+  tools?: EnhancedTool[];
+  toolConfig?: ToolConfig;
+  displayName?: string;
+  ttl?: string;
+  expireTime?: string;
+}
+
+export interface CachedContentResponse {
+  name: string;
+  model: string;
+  displayName?: string;
+  usageMetadata?: {
+    totalTokenCount: number;
+  };
+  createTime: string;
+  updateTime: string;
+  expireTime: string;
+}
+
+export interface UpdateCachedContentRequest {
+  cachedContent: {
+    ttl?: string;
+    expireTime?: string;
+  };
+  updateMask: {
+    paths: string[];
+  };
+}
+
+// Live API types
+export interface LiveAPIConfig {
+  responseModalities: ('AUDIO' | 'TEXT')[];
+  speechConfig?: {
+    voiceConfig?: {
+      prebuiltVoiceConfig?: {
+        voiceName: string;
+      };
+    };
+  };
+}
+
+export interface LiveAPIMessage {
+  clientContent?: {
+    turns: Content[];
+    turnComplete: boolean;
+  };
+  setupComplete?: {};
+  realtimeInput?: {
+    mediaChunks: {
+      mimeType: string;
+      data: string;
+    }[];
+  };
+}
+
+// Batch processing types
+export interface BatchPredictionJob {
+  displayName: string;
+  model: string;
+  inputConfig: {
+    instancesFormat: 'jsonl';
+    gcsSource: {
+      uris: string[];
+    };
+  };
+  outputConfig: {
+    predictionsFormat: 'jsonl';
+    gcsDestination: {
+      outputUriPrefix: string;
+    };
+  };
+}
+
+// Model tuning types
+export interface TuningJob {
+  baseModel: string;
+  supervisedTuningSpec: {
+    trainingDatasetUri: string;
+    validationDatasetUri?: string;
+    hyperParameters?: {
+      epochCount?: number;
+      learningRateMultiplier?: number;
+    };
+  };
+}
+
 // Re-export all the types
 export {
   Content,

@@ -41,6 +41,12 @@ export interface GoogleAISafetySetting {
 
 export interface GoogleAITool {
   functionDeclarations?: GoogleAIFunctionDeclaration[];
+  codeExecution?: {
+    language: 'PYTHON';
+  };
+  googleSearchRetrieval?: {
+    disableAttribution?: boolean;
+  };
 }
 
 export interface GoogleAIFunctionDeclaration {
@@ -60,6 +66,32 @@ export interface GoogleAICandidate {
   safetyRatings?: GoogleAISafetyRating[];
   citationMetadata?: {
     citationSources: any[];
+  };
+  groundingMetadata?: {
+    searchEntryPoint?: {
+      renderedContent: string;
+    };
+    groundingChunks?: Array<{
+      web?: {
+        uri: string;
+        title: string;
+      };
+      retrievedContext?: {
+        uri: string;
+        title: string;
+        text: string;
+      };
+    }>;
+    groundingSupports?: Array<{
+      segment?: {
+        startIndex: number;
+        endIndex: number;
+        text: string;
+      };
+      groundingChunkIndices?: number[];
+      confidenceScores?: number[];
+    }>;
+    webSearchQueries?: string[];
   };
 }
 

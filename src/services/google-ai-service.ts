@@ -12,10 +12,14 @@ import {
   GoogleAIPart,
   GoogleAICandidate,
   GoogleAISafetyRating,
+  GoogleAITool,
   getGoogleAIModelByName,
   createDefaultGoogleAISafetyRatings,
   googleAIModels
 } from '../types/google-ai';
+import { advancedFeaturesService } from './advanced-features';
+import { systemInstructionsService } from './system-instructions';
+import { thinkingModeService } from './thinking-mode';
 import {
   PresetResponse,
   defaultPresetResponses,
@@ -45,10 +49,42 @@ export class GoogleAIService {
     // Simulate API delay
     await this.delay(this.config.mockDelayMs);
 
+    // Apply system instructions to contents
+    let effectiveContents = request.contents;
+    let systemInstruction: any | undefined;
+    
+    if (request.systemInstruction) {
+      if (typeof request.systemInstruction === 'string') {
+        systemInstruction = systemInstructionsService.createSystemInstruction(request.systemInstruction);
+      } else {
+        systemInstruction = request.systemInstruction;
+      }
+      
+      effectiveContents = systemInstructionsService.applySystemInstruction(
+        request.contents as any,
+        systemInstruction,
+        modelName
+      ) as any;
+    }
+
+    // Process enhanced tools (grounding, code execution)
+    let groundingMetadata: any | undefined;
+    let enhancedContent = '';
+    
+    if (request.tools && request.tools.length > 0) {
+      const inputText = this.extractTextFromContents(effectiveContents);
+      const toolResult = await advancedFeaturesService.processEnhancedTools(
+        request.tools as any[], 
+        inputText
+      );
+      groundingMetadata = toolResult.groundingMetadata;
+      enhancedContent = toolResult.additionalContent || '';
+    }
+
     // Validate input token limits
     const model = this.getModelByName(modelName);
     if (model) {
-      const inputText = this.extractTextFromContents(request.contents);
+      const inputText = this.extractTextFromContents(effectiveContents);
       const inputTokens = this.estimateTokens(inputText);
       
       if (inputTokens > model.inputTokenLimit) {
@@ -64,7 +100,7 @@ export class GoogleAIService {
     }
 
     // Extract text from the request to match against presets
-    const inputText = this.extractTextFromContents(request.contents);
+    const inputText = this.extractTextFromContents(effectiveContents);
     
     // Find matching preset response
     const matchedResponse = this.findMatchingPreset(inputText);
@@ -79,6 +115,53 @@ export class GoogleAIService {
     } else {
       // Return fallback response if no match found
       response = this.convertToGoogleAIResponse(defaultFallbackResponse);
+    }
+
+    // Enhance response with grounding content if available
+    if (enhancedContent && response.candidates && response.candidates[0]) {
+      const originalText = response.candidates[0].content.parts[0]?.text || '';
+      response.candidates[0].content.parts[0] = {
+        text: enhancedContent + '\n\n' + originalText
+      };
+    }
+
+    // Add grounding metadata if available
+    if (groundingMetadata && response.candidates && response.candidates[0]) {
+      response.candidates[0].groundingMetadata = groundingMetadata;
+    }
+
+    // Process code execution in response
+    if (response.candidates && response.candidates[0] && response.candidates[0].content.parts) {
+      response.candidates[0].content.parts = await advancedFeaturesService.processCodeExecutionParts(
+        response.candidates[0].content.parts as any
+      ) as any;
+    }
+
+    // Apply system instruction behavioral enhancements
+    if (systemInstruction && response.candidates && response.candidates[0] && response.candidates[0].content.parts[0]) {
+      const originalText = response.candidates[0].content.parts[0].text || '';
+      const enhancedText = systemInstructionsService.enhanceResponseWithSystemBehavior(
+        originalText,
+        systemInstruction,
+        modelName
+      );
+      if (enhancedText !== originalText) {
+        response.candidates[0].content.parts[0] = {
+          text: enhancedText
+        };
+      }
+    }
+
+    // Add thinking mode if enabled and supported
+    if (response.candidates && response.candidates[0] && response.candidates[0].content.parts) {
+      if (thinkingModeService.shouldEnableThinking(request, modelName)) {
+        const inputText = this.extractTextFromContents(effectiveContents);
+        response.candidates[0].content.parts = thinkingModeService.addThinkingToResponse(
+          response.candidates[0].content.parts as any,
+          inputText,
+          modelName
+        ) as any;
+      }
     }
 
     // Trim output if model limits are specified

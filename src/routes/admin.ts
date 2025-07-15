@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { MockGeminiService, createMockGeminiService } from '../services/mock-service';
 import { PresetResponse } from '../data/preset-responses';
+import { systemInstructionsService } from '../services/system-instructions';
+import { contextCachingService } from '../services/context-caching';
 
 // Extend the Request interface to include custom service instance
 declare global {
@@ -195,6 +197,124 @@ router.get('/docs', (req: Request, res: Response): void => {
       'text-embedding-004'
     ]
   });
+});
+
+// System Instructions Management
+router.get('/system-instructions', (req: Request, res: Response) => {
+  try {
+    const stats = systemInstructionsService.getStats();
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get system instructions stats'
+    });
+  }
+});
+
+router.post('/system-instructions/default', (req: Request, res: Response) => {
+  try {
+    const { text } = req.body;
+    if (!text) {
+      res.status(400).json({
+        success: false,
+        error: 'Text field is required'
+      });
+      return;
+    }
+    
+    const instruction = systemInstructionsService.createSystemInstruction(text);
+    systemInstructionsService.setDefaultSystemInstruction(instruction);
+    
+    res.json({
+      success: true,
+      message: 'Default system instruction set successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to set default system instruction'
+    });
+  }
+});
+
+router.post('/system-instructions/model/:modelName', (req: Request, res: Response) => {
+  try {
+    const { modelName } = req.params;
+    const { text } = req.body;
+    
+    if (!text) {
+      res.status(400).json({
+        success: false,
+        error: 'Text field is required'
+      });
+      return;
+    }
+    
+    const instruction = systemInstructionsService.createSystemInstruction(text);
+    systemInstructionsService.setModelSystemInstruction(modelName, instruction);
+    
+    res.json({
+      success: true,
+      message: `System instruction set for model ${modelName}`
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: `Failed to set system instruction for model ${req.params.modelName}`
+    });
+  }
+});
+
+router.delete('/system-instructions', (req: Request, res: Response) => {
+  try {
+    systemInstructionsService.clearSystemInstructions();
+    res.json({
+      success: true,
+      message: 'All system instructions cleared'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to clear system instructions'
+    });
+  }
+});
+
+// Context Caching Management
+router.get('/cache/stats', (req: Request, res: Response) => {
+  try {
+    const stats = contextCachingService.getCacheStats();
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get cache stats'
+    });
+  }
+});
+
+router.post('/cache/cleanup', (req: Request, res: Response) => {
+  try {
+    contextCachingService.cleanupExpiredEntries();
+    const stats = contextCachingService.getCacheStats();
+    res.json({
+      success: true,
+      message: 'Cache cleanup completed',
+      data: stats
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cleanup cache'
+    });
+  }
 });
 
 export default router; 

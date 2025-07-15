@@ -247,6 +247,74 @@ export const defaultPresetResponses: PresetResponse[] = [
     }
   },
   {
+    id: 'grounding-search',
+    name: 'Web Search Grounding',
+    description: 'Response that triggers web search grounding',
+    trigger: {
+      type: 'contains',
+      value: 'what is'
+    },
+    response: {
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                text: 'I can help you find current information about that topic. Let me search the web for the latest details.'
+              }
+            ],
+            role: 'model'
+          },
+          finishReason: FinishReason.STOP,
+          index: 0,
+          safetyRatings: getDefaultSafetyRatings()
+        }
+      ],
+      usageMetadata: {
+        promptTokenCount: 8,
+        candidatesTokenCount: 20,
+        totalTokenCount: 28
+      }
+    }
+  },
+  {
+    id: 'code-execution',
+    name: 'Code Execution Example',
+    description: 'Response with executable Python code',
+    trigger: {
+      type: 'contains',
+      value: 'python code'
+    },
+    response: {
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                text: 'Here\'s a Python code example that I can execute:'
+              },
+              {
+                executableCode: {
+                  language: 'PYTHON' as const,
+                  code: 'print("Hello from Python!")\nresult = 2 + 2\nprint(f"2 + 2 = {result}")\n\n# Calculate fibonacci\ndef fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)\n\nprint(f"Fibonacci of 5: {fibonacci(5)}")'
+                }
+              } as any
+            ],
+            role: 'model'
+          },
+          finishReason: FinishReason.STOP,
+          index: 0,
+          safetyRatings: getDefaultSafetyRatings()
+        }
+      ],
+      usageMetadata: {
+        promptTokenCount: 12,
+        candidatesTokenCount: 30,
+        totalTokenCount: 42
+      }
+    }
+  },
+  {
     id: 'coding-help',
     name: 'Coding Assistance',
     description: 'Helpful coding responses',

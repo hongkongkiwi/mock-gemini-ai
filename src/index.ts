@@ -9,6 +9,7 @@ import googleAiRoutes from './routes/google-ai';
 import adminRoutes from './routes/admin';
 import filesRoutes from './routes/files';
 import publisherRoutes from './routes/publishers';
+import cachedContentRoutes from './routes/cached-content';
 import { createGoogleCloudError } from './middleware/google-cloud-errors';
 import { 
   createMockGeminiService, 
@@ -156,6 +157,7 @@ app.use('/v1', vertexAiRoutes);    // Vertex AI routes
 app.use('/', googleAiRoutes);       // Google AI routes (mounted at root)
 app.use('/v1', filesRoutes);
 app.use('/v1', publisherRoutes);
+app.use('/v1', cachedContentRoutes); // Context Caching routes
 app.use('/admin', adminRoutes);
 
 // Health check endpoint
