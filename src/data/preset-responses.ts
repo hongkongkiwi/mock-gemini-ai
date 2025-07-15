@@ -135,6 +135,31 @@ export function getBaseModelDefinitions() {
       topP: 1.0,
       topK: 1
     },
+    // Multimodal Embedding Models
+    {
+      id: 'multimodalembedding@001',
+      version: '001',
+      displayName: 'Multimodal Embedding 001',
+      description: 'Generate embeddings for text, image, video and audio content',
+      inputTokenLimit: 2048,
+      outputTokenLimit: 1,
+      supportedGenerationMethods: ['embedContent'],
+      temperature: 0.0,
+      topP: 1.0,
+      topK: 1
+    },
+    {
+      id: 'text-multilingual-embedding-002',
+      version: '002',
+      displayName: 'Text Multilingual Embedding 002',
+      description: 'Multilingual text embedding with enhanced multimodal capabilities',
+      inputTokenLimit: 2048,
+      outputTokenLimit: 1,
+      supportedGenerationMethods: ['embedContent'],
+      temperature: 0.0,
+      topP: 1.0,
+      topK: 1
+    },
     // Imagen 3 - Image Generation
     {
       id: 'imagen-3.0-generate-002',

@@ -183,12 +183,17 @@ router.get('/projects/:projectId/locations/:location/cachedContents',
   async (req: ProjectValidationRequest, res: Response): Promise<void> => {
     try {
       const { projectId, location } = req.validatedProject!;
-      const cachedContents = await contextCachingService.listCachedContent(projectId, location);
+      const pageSize = parseInt(req.query.pageSize as string || '50');
+      const pageToken = req.query.pageToken as string;
+      
+      const result = await contextCachingService.listCachedContent(
+        projectId, 
+        location, 
+        pageSize, 
+        pageToken
+      );
 
-      res.json({
-        cachedContents,
-        nextPageToken: null // Simple implementation without pagination
-      });
+      res.json(result);
     } catch (error) {
       console.error('Error listing cached content:', error);
       res.status(500).json({

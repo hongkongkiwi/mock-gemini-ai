@@ -23,6 +23,27 @@ interface CacheEntry {
   updateTime: string;
   expireTime: string;
   ttl?: string;
+  // For implicit caching
+  contentHash?: string;
+  hitCount?: number;
+  lastHitTime?: string;
+}
+
+interface CacheStats {
+  totalCaches: number;
+  activeCaches: number;
+  expiredCaches: number;
+  totalTokensStored: number;
+  totalHits: number;
+  implicitCacheHits: number;
+  explicitCacheHits: number;
+}
+
+interface ImplicitCacheResult {
+  hit: boolean;
+  cacheId?: string;
+  tokenCount: number;
+  savings: number;
 }
 
 /**
@@ -31,6 +52,12 @@ interface CacheEntry {
 export class ContextCachingService {
   private cache: Map<string, CacheEntry> = new Map();
   private cacheIdCounter = 1;
+  private implicitCacheMap: Map<string, string> = new Map(); // contentHash -> cacheId
+  private stats = {
+    totalHits: 0,
+    implicitCacheHits: 0,
+    explicitCacheHits: 0
+  };
 
   /**
    * Create a new cached content entry
@@ -59,6 +86,9 @@ export class ContextCachingService {
     // Calculate token count for cached content
     const totalTokenCount = this.calculateTokenCount(request);
 
+    // Generate content hash for implicit caching
+    const contentHash = this.generateContentHash(request);
+
     const cacheEntry: CacheEntry = {
       id: cacheId,
       name: `projects/${projectId}/locations/${location}/cachedContents/${cacheId}`,
@@ -74,10 +104,18 @@ export class ContextCachingService {
       createTime: now.toISOString(),
       updateTime: now.toISOString(),
       expireTime: expireTime.toISOString(),
-      ttl: request.ttl
+      ttl: request.ttl,
+      contentHash,
+      hitCount: 0,
+      lastHitTime: undefined
     };
 
     this.cache.set(cacheId, cacheEntry);
+
+    // Add to implicit cache map
+    if (contentHash) {
+      this.implicitCacheMap.set(contentHash, cacheId);
+    }
 
     // Schedule cleanup
     this.scheduleCleanup(cacheId, expireTime);
@@ -94,6 +132,53 @@ export class ContextCachingService {
   }
 
   /**
+   * Check for implicit cache hit based on content prefix
+   */
+  checkImplicitCache(contents: Content[], model: string): ImplicitCacheResult {
+    const contentText = this.extractTextFromContents(contents);
+    
+    // Minimum token counts for cache eligibility
+    const minTokens = model.includes('2.5-flash') ? 1024 : 
+                     model.includes('2.5-pro') ? 2048 : 1024;
+    
+    const estimatedTokens = this.estimateTokenCount(contentText);
+    
+    if (estimatedTokens < minTokens) {
+      return { hit: false, tokenCount: 0, savings: 0 };
+    }
+
+    // Check for prefix matches in existing caches
+    for (const [cacheId, entry] of this.cache.entries()) {
+      if (this.isExpired(entry) || entry.model !== model) {
+        continue;
+      }
+
+      const cachedText = this.extractTextFromContents(entry.contents || []);
+      
+      // Check if current content starts with cached content (prefix match)
+      if (contentText.startsWith(cachedText) && cachedText.length > 0) {
+        // Update hit statistics
+        entry.hitCount = (entry.hitCount || 0) + 1;
+        entry.lastHitTime = new Date().toISOString();
+        this.stats.totalHits++;
+        this.stats.implicitCacheHits++;
+
+        const cacheTokenCount = entry.usageMetadata?.totalTokenCount || 0;
+        const savings = Math.floor(cacheTokenCount * 0.75); // 75% savings
+
+        return {
+          hit: true,
+          cacheId,
+          tokenCount: cacheTokenCount,
+          savings
+        };
+      }
+    }
+
+    return { hit: false, tokenCount: 0, savings: 0 };
+  }
+
+  /**
    * Get cached content by ID
    */
   async getCachedContent(cacheId: string): Promise<CacheEntry | null> {
@@ -104,8 +189,11 @@ export class ContextCachingService {
     }
 
     // Check if expired
-    if (new Date() > new Date(entry.expireTime)) {
+    if (this.isExpired(entry)) {
       this.cache.delete(cacheId);
+      if (entry.contentHash) {
+        this.implicitCacheMap.delete(entry.contentHash);
+      }
       return null;
     }
 
@@ -126,8 +214,11 @@ export class ContextCachingService {
     }
 
     // Check if expired
-    if (new Date() > new Date(entry.expireTime)) {
+    if (this.isExpired(entry)) {
       this.cache.delete(cacheId);
+      if (entry.contentHash) {
+        this.implicitCacheMap.delete(entry.contentHash);
+      }
       return null;
     }
 
@@ -161,46 +252,68 @@ export class ContextCachingService {
    * Delete cached content
    */
   async deleteCachedContent(cacheId: string): Promise<boolean> {
+    const entry = this.cache.get(cacheId);
+    if (entry && entry.contentHash) {
+      this.implicitCacheMap.delete(entry.contentHash);
+    }
     return this.cache.delete(cacheId);
   }
 
   /**
-   * List all cached content for a project/location
+   * List all cached content for a project/location with pagination
    */
-  async listCachedContent(projectId: string, location: string): Promise<CachedContentResponse[]> {
+  async listCachedContent(
+    projectId: string, 
+    location: string, 
+    pageSize: number = 50,
+    pageToken?: string
+  ): Promise<{
+    cachedContents: CachedContentResponse[];
+    nextPageToken?: string;
+  }> {
     const prefix = `projects/${projectId}/locations/${location}/cachedContents/`;
     const results: CachedContentResponse[] = [];
 
-    for (const [cacheId, entry] of this.cache.entries()) {
-      if (entry.name.startsWith(prefix)) {
-        // Check if expired
-        if (new Date() > new Date(entry.expireTime)) {
-          this.cache.delete(cacheId);
-          continue;
-        }
+    // Convert to array and filter by prefix
+    const entries = Array.from(this.cache.entries())
+      .filter(([cacheId, entry]) => entry.name.startsWith(prefix))
+      .filter(([cacheId, entry]) => !this.isExpired(entry));
 
-        results.push({
-          name: entry.name,
-          model: entry.model,
-          displayName: entry.displayName,
-          usageMetadata: entry.usageMetadata,
-          createTime: entry.createTime,
-          updateTime: entry.updateTime,
-          expireTime: entry.expireTime
-        });
-      }
+    // Handle pagination
+    const startIndex = pageToken ? parseInt(pageToken) : 0;
+    const endIndex = Math.min(startIndex + pageSize, entries.length);
+    const paginatedEntries = entries.slice(startIndex, endIndex);
+
+    for (const [cacheId, entry] of paginatedEntries) {
+      results.push({
+        name: entry.name,
+        model: entry.model,
+        displayName: entry.displayName,
+        usageMetadata: entry.usageMetadata,
+        createTime: entry.createTime,
+        updateTime: entry.updateTime,
+        expireTime: entry.expireTime
+      });
     }
 
-    return results;
+    const response: any = { cachedContents: results };
+    
+    // Add next page token if there are more results
+    if (endIndex < entries.length) {
+      response.nextPageToken = endIndex.toString();
+    }
+
+    return response;
   }
 
   /**
-   * Use cached content in a generation request
+   * Use cached content in a generation request with implicit cache checking
    */
   async applyCachedContent(cacheId: string, newContents: Content[]): Promise<{
     allContents: Content[];
     usedCache: boolean;
     cacheTokenCount: number;
+    implicitCacheHit?: boolean;
   }> {
     const entry = await this.getCachedContent(cacheId);
     
@@ -211,6 +324,12 @@ export class ContextCachingService {
         cacheTokenCount: 0
       };
     }
+
+    // Update explicit cache hit statistics
+    entry.hitCount = (entry.hitCount || 0) + 1;
+    entry.lastHitTime = new Date().toISOString();
+    this.stats.totalHits++;
+    this.stats.explicitCacheHits++;
 
     // Combine cached content with new content
     const allContents: Content[] = [];
@@ -236,6 +355,48 @@ export class ContextCachingService {
   }
 
   /**
+   * Get comprehensive cache statistics
+   */
+  getCacheStats(): CacheStats {
+    let activeCaches = 0;
+    let expiredCaches = 0;
+    let totalTokensStored = 0;
+
+    for (const entry of this.cache.values()) {
+      if (this.isExpired(entry)) {
+        expiredCaches++;
+      } else {
+        activeCaches++;
+        totalTokensStored += entry.usageMetadata?.totalTokenCount || 0;
+      }
+    }
+
+    return {
+      totalCaches: this.cache.size,
+      activeCaches,
+      expiredCaches,
+      totalTokensStored,
+      totalHits: this.stats.totalHits,
+      implicitCacheHits: this.stats.implicitCacheHits,
+      explicitCacheHits: this.stats.explicitCacheHits
+    };
+  }
+
+  /**
+   * Clear all caches (for testing purposes)
+   */
+  clearAllCaches(): void {
+    this.cache.clear();
+    this.implicitCacheMap.clear();
+    this.stats = {
+      totalHits: 0,
+      implicitCacheHits: 0,
+      explicitCacheHits: 0
+    };
+    this.cacheIdCounter = 1;
+  }
+
+  /**
    * Clean up expired entries
    */
   cleanupExpiredEntries(): void {
@@ -243,36 +404,56 @@ export class ContextCachingService {
     const expiredKeys: string[] = [];
 
     for (const [cacheId, entry] of this.cache.entries()) {
-      if (now > new Date(entry.expireTime)) {
+      if (this.isExpired(entry)) {
         expiredKeys.push(cacheId);
+        if (entry.contentHash) {
+          this.implicitCacheMap.delete(entry.contentHash);
+        }
       }
     }
 
     expiredKeys.forEach(key => this.cache.delete(key));
   }
 
-  /**
-   * Get cache statistics
-   */
-  getCacheStats(): {
-    totalEntries: number;
-    totalTokensCached: number;
-    memoryUsage: string;
-  } {
-    let totalTokens = 0;
-    
-    for (const entry of this.cache.values()) {
-      totalTokens += entry.usageMetadata?.totalTokenCount || 0;
-    }
+  // Private helper methods
 
-    return {
-      totalEntries: this.cache.size,
-      totalTokensCached: totalTokens,
-      memoryUsage: `${Math.round(JSON.stringify(Array.from(this.cache.values())).length / 1024)} KB`
-    };
+  private isExpired(entry: CacheEntry): boolean {
+    return new Date() > new Date(entry.expireTime);
   }
 
-  // Private helper methods
+  private generateContentHash(request: CachedContentRequest): string {
+    const content = JSON.stringify({
+      model: request.model,
+      systemInstruction: request.systemInstruction,
+      contents: request.contents,
+      tools: request.tools
+    });
+    
+    // Simple hash function (for production, use a proper hash function)
+    let hash = 0;
+    for (let i = 0; i < content.length; i++) {
+      const char = content.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return hash.toString(16);
+  }
+
+  private extractTextFromContents(contents: Content[]): string {
+    return contents
+      .map(content => 
+        content.parts
+          ?.filter(part => 'text' in part)
+          .map(part => (part as any).text)
+          .join(' ') || ''
+      )
+      .join(' ');
+  }
+
+  private estimateTokenCount(text: string): number {
+    // Rough estimation: ~4 characters per token
+    return Math.ceil(text.length / 4);
+  }
 
   private calculateTokenCount(request: CachedContentRequest): number {
     let tokenCount = 0;
@@ -312,9 +493,13 @@ export class ContextCachingService {
     
     if (delay > 0) {
       setTimeout(() => {
-        this.cache.delete(cacheId);
+        this.deleteCachedContent(cacheId);
       }, delay);
     }
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 

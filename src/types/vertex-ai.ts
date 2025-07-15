@@ -454,4 +454,43 @@ export function createDefaultSafetyRatings(): SafetyRating[] {
       severity: HarmSeverity.HARM_SEVERITY_NEGLIGIBLE,
     },
   ];
+}
+
+// Multimodal Embedding types
+export interface MultimodalEmbeddingRequest {
+  model: string;
+  content: Content;
+  taskType?: 'RETRIEVAL_QUERY' | 'RETRIEVAL_DOCUMENT' | 'SEMANTIC_SIMILARITY' | 'CLASSIFICATION' | 'CLUSTERING' | 'QUESTION_ANSWERING' | 'FACT_VERIFICATION';
+  outputDimensionality?: number;
+}
+
+export interface MultimodalEmbeddingResponse {
+  embedding: {
+    values: number[];
+  };
+  usageMetadata?: {
+    totalTokenCount: number;
+  };
+}
+
+export interface BatchMultimodalEmbeddingRequest {
+  requests: MultimodalEmbeddingRequest[];
+}
+
+export interface BatchMultimodalEmbeddingResponse {
+  embeddings: {
+    values: number[];
+  }[];
+}
+
+// Enhanced embedding models
+export interface EmbeddingModel {
+  id: string;
+  name: string;
+  displayName: string;
+  description: string;
+  supportedModalities: ('text' | 'image' | 'video' | 'audio')[];
+  dimensions: number;
+  maxTokens: number;
+  taskTypes: string[];
 } 

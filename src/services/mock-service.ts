@@ -220,16 +220,30 @@ export class MockGeminiService {
     const effectiveProjectId = projectId || this.config.googleCloud.defaultProjectId;
     const effectiveLocation = location || this.config.googleCloud.defaultLocation;
 
-    // Handle cached content if present
+    // Handle cached content (explicit and implicit caching)
     let effectiveContents = request.contents;
     let cacheTokenCount = 0;
+    let cachedContentTokenCount = 0;
+    let implicitCacheHit = false;
     
     if (request.cachedContent) {
+      // Explicit caching
       const cacheId = request.cachedContent.split('/').pop();
       if (cacheId) {
         const cacheResult = await contextCachingService.applyCachedContent(cacheId, request.contents);
         effectiveContents = cacheResult.allContents;
         cacheTokenCount = cacheResult.cacheTokenCount;
+        cachedContentTokenCount = cacheTokenCount;
+      }
+    } else {
+      // Check for implicit cache hit (Gemini 2.5 models)
+      const effectiveModelName = modelName || this.config.defaultModel;
+      if (effectiveModelName.includes('2.5-flash') || effectiveModelName.includes('2.5-pro')) {
+        const implicitResult = contextCachingService.checkImplicitCache(request.contents, effectiveModelName);
+        if (implicitResult.hit) {
+          cachedContentTokenCount = implicitResult.tokenCount;
+          implicitCacheHit = true;
+        }
       }
     }
 
@@ -306,6 +320,11 @@ export class MockGeminiService {
       response = defaultFallbackResponse;
     }
 
+    // Generate executable code if code execution tool is available
+    if (hasCodeExecutionTool && response.candidates && response.candidates[0]) {
+      response = this.generateCodeExecutionResponse(response, inputText);
+    }
+
     // Enhance response with grounding content if available
     if (enhancedContent && response.candidates && response.candidates[0]) {
       const originalText = response.candidates[0].content.parts[0]?.text || '';
@@ -353,11 +372,14 @@ export class MockGeminiService {
       }
     }
 
-    // Update usage metadata to include cache tokens
-    if (response.usageMetadata && cacheTokenCount > 0) {
-      response.usageMetadata.cachedContentTokenCount = cacheTokenCount;
-      response.usageMetadata.totalTokenCount = 
-        (response.usageMetadata.totalTokenCount || 0) + cacheTokenCount;
+    // Update usage metadata to include cache tokens (both explicit and implicit)
+    if (response.usageMetadata && cachedContentTokenCount > 0) {
+      response.usageMetadata.cachedContentTokenCount = cachedContentTokenCount;
+      // For implicit cache hits, don't add to total (savings already applied)
+      if (!implicitCacheHit) {
+        response.usageMetadata.totalTokenCount = 
+          (response.usageMetadata.totalTokenCount || 0) + cachedContentTokenCount;
+      }
     }
 
     // Trim output if model limits are specified
@@ -675,7 +697,13 @@ export class MockGeminiService {
     const effectiveProjectId = projectId || this.config.googleCloud.defaultProjectId;
     const effectiveLocation = location || this.config.googleCloud.defaultLocation;
     
-    // Return a deterministic embedding based on content
+    // Determine if this is a multimodal embedding request
+    const effectiveModelName = modelName || 'text-embedding-004';
+    const isMultimodalModel = effectiveModelName.includes('multimodalembedding');
+    const isMultimodalContent = this.isMultimodalContent(request.content);
+    const contentType = this.getContentType(request.content);
+    
+    // Extract text and other content for embedding
     const text = this.extractTextFromContent(request.content);
     
     // Validate input token limits for the model
@@ -689,11 +717,23 @@ export class MockGeminiService {
       }
     }
     
-    const embedding = this.generateDeterministicEmbedding(text);
+    // Generate embedding based on content type and model
+    // Use multimodal embedding for multimodal models OR when content has multimodal parts
+    const useMultimodalEmbedding = isMultimodalModel || isMultimodalContent;
+    const embedding = useMultimodalEmbedding
+      ? this.generateMultimodalEmbedding(request.content, effectiveModelName)
+      : this.generateDeterministicEmbedding(text);
+    
+    // For regular embeddings, ensure correct dimensions
+    const dimensions = this.getEmbeddingDimensions(effectiveModelName);
+    const finalEmbedding = useMultimodalEmbedding ? embedding : embedding.slice(0, dimensions);
     
     return {
       embedding: {
-        values: embedding
+        values: finalEmbedding
+      },
+      usageMetadata: {
+        totalTokenCount: this.estimateTokens(text)
       }
     };
   }
@@ -768,6 +808,10 @@ export class MockGeminiService {
   }
 
   private extractTextFromContent(content: Content): string {
+    if (!content || !content.parts) {
+      return ''; // Return empty string for null/invalid content
+    }
+    
     return content.parts
       .map(part => ('text' in part) ? part.text : '')
       .join(' ');
@@ -814,6 +858,98 @@ export class MockGeminiService {
     });
     
     return embedding;
+  }
+
+  private isMultimodalContent(content: any): boolean {
+    if (!content || !content.parts) return false;
+    
+    return content.parts.some((part: any) => 
+      part.inlineData || part.fileData || part.videoMetadata
+    );
+  }
+
+  private getContentType(content: any): string {
+    if (!content || !content.parts) return 'text';
+    
+    for (const part of content.parts) {
+      if (part.inlineData) {
+        const mimeType = part.inlineData.mimeType;
+        if (mimeType.startsWith('image/')) return 'image';
+        if (mimeType.startsWith('video/')) return 'video';
+        if (mimeType.startsWith('audio/')) return 'audio';
+      }
+      if (part.fileData) {
+        const mimeType = part.fileData.mimeType;
+        if (mimeType.startsWith('image/')) return 'image';
+        if (mimeType.startsWith('video/')) return 'video';
+        if (mimeType.startsWith('audio/')) return 'audio';
+      }
+    }
+    
+    return 'text';
+  }
+
+  private generateMultimodalEmbedding(content: any, modelName: string): number[] {
+    const contentType = this.getContentType(content);
+    const text = this.extractTextFromContent(content);
+    const dimensions = this.getEmbeddingDimensions(modelName);
+    
+    // Generate base embedding with correct dimensions
+    let embedding = Array.from({ length: dimensions }, (_, i) => {
+      const hash = this.simpleHash(text + i);
+      return (hash % 2000 - 1000) / 1000; // Normalize to [-1, 1]
+    });
+    
+    // Modify embedding based on content type for multimodal characteristics
+    if (content && content.parts) {
+      for (const part of content.parts) {
+        if (part.inlineData || part.fileData) {
+          const mimeType = (part.inlineData?.mimeType || part.fileData?.mimeType) || '';
+          
+          // Add modality-specific features to embedding
+          if (mimeType.startsWith('image/')) {
+            // Simulate image features - add spatial/visual characteristics
+            for (let i = 0; i < 128; i++) {
+              const idx = (i * 6) % embedding.length;
+              embedding[idx] += 0.3 * Math.sin(i * 0.1); // Visual pattern
+            }
+          } else if (mimeType.startsWith('video/')) {
+            // Simulate video features - add temporal characteristics
+            for (let i = 0; i < 128; i++) {
+              const idx = (i * 4) % embedding.length;
+              embedding[idx] += 0.2 * Math.cos(i * 0.15); // Temporal pattern
+            }
+          } else if (mimeType.startsWith('audio/')) {
+            // Simulate audio features - add frequency characteristics
+            for (let i = 0; i < 128; i++) {
+              const idx = (i * 3) % embedding.length;
+              embedding[idx] += 0.25 * Math.sin(i * 0.2); // Frequency pattern
+            }
+          }
+        }
+      }
+    }
+    
+    // Normalize to maintain [-1, 1] range
+    const maxAbs = Math.max(...embedding.map(Math.abs));
+    if (maxAbs > 1) {
+      embedding = embedding.map(x => x / maxAbs);
+    }
+    
+    return embedding;
+  }
+
+  private getEmbeddingDimensions(modelName: string): number {
+    // Return appropriate dimensions based on model
+    if (modelName.includes('multimodalembedding')) {
+      return 1408; // Multimodal embedding dimensions
+    } else if (modelName.includes('text-multilingual-embedding')) {
+      return 768; // Multilingual text embedding dimensions
+    } else if (modelName.includes('text-embedding-004')) {
+      return 768; // Standard text embedding dimensions
+    } else {
+      return 768; // Default dimensions
+    }
   }
 
   private simpleHash(str: string): number {
@@ -1021,9 +1157,145 @@ export class MockGeminiService {
       }
     }
 
-    return {
-      ...content,
-      parts: processedParts
-    };
-  }
+         return {
+       ...content,
+       parts: processedParts
+     };
+   }
+
+   // Generate response with executable code based on input
+   private generateCodeExecutionResponse(response: GenerateContentResponse, inputText: string): GenerateContentResponse {
+     if (!response.candidates || !response.candidates[0] || !response.candidates[0].content.parts) {
+       return response;
+     }
+
+     const parts = [...response.candidates[0].content.parts];
+     
+     // Analyze input to determine if we should generate code
+     const lowerInput = inputText.toLowerCase();
+     let shouldGenerateCode = false;
+     let codeToGenerate = '';
+
+     // Math/calculation requests
+     if (lowerInput.includes('calculate') || lowerInput.includes('compute') || 
+         lowerInput.includes('fibonacci') || lowerInput.includes('factorial') ||
+         lowerInput.includes('sum') || lowerInput.includes('multiply')) {
+       shouldGenerateCode = true;
+       
+       if (lowerInput.includes('fibonacci')) {
+         const numberMatch = inputText.match(/(\d+)(?:th|st|nd|rd)?/);
+         const n = numberMatch ? parseInt(numberMatch[1]) : 10;
+         codeToGenerate = `def fibonacci(n):
+    if n <= 1:
+        return n
+    a, b = 0, 1
+    for _ in range(2, n + 1):
+        a, b = b, a + b
+    return b
+
+result = fibonacci(${n})
+print(f"The ${n}th Fibonacci number is: {result}")`;
+       } else if (lowerInput.includes('factorial')) {
+         const numberMatch = inputText.match(/(\d+)/);
+         const n = numberMatch ? parseInt(numberMatch[1]) : 5;
+         codeToGenerate = `import math
+result = math.factorial(${n})
+print(f"${n}! = {result}")`;
+       } else if (lowerInput.includes('palindrome')) {
+         codeToGenerate = `def find_nearest_palindrome(n):
+    def is_palindrome(num):
+        return str(num) == str(num)[::-1]
+    
+    lower = n - 1
+    higher = n + 1
+    
+    while lower >= 0 and not is_palindrome(lower):
+        lower -= 1
+    
+    while not is_palindrome(higher):
+        higher += 1
+    
+    if lower >= 0 and (n - lower) <= (higher - n):
+        return lower
+    return higher
+
+# Find nearest palindrome
+number = ${inputText.match(/\d+/)?.[0] || '123'}
+nearest = find_nearest_palindrome(int(number))
+print(f"Nearest palindrome to {number}: {nearest}")`;
+       } else {
+         codeToGenerate = `# Performing calculation
+result = ${inputText.match(/\d+/)?.[0] || '42'} * 2
+print(f"Result: {result}")`;
+       }
+     }
+
+     // Data analysis requests
+     else if (lowerInput.includes('analyze') || lowerInput.includes('plot') || 
+              lowerInput.includes('chart') || lowerInput.includes('graph')) {
+       shouldGenerateCode = true;
+       codeToGenerate = `import matplotlib.pyplot as plt
+import numpy as np
+
+# Generate sample data
+x = np.linspace(0, 10, 100)
+y = np.sin(x)
+
+# Create plot
+plt.figure(figsize=(10, 6))
+plt.plot(x, y, 'b-', linewidth=2)
+plt.title('Sample Data Analysis')
+plt.xlabel('X values')
+plt.ylabel('Y values')
+plt.grid(True)
+plt.show()
+
+print("Data analysis complete!")`;
+     }
+
+     // File processing requests
+     else if (lowerInput.includes('file') || lowerInput.includes('csv') || 
+              lowerInput.includes('json') || lowerInput.includes('data')) {
+       shouldGenerateCode = true;
+       codeToGenerate = `import pandas as pd
+import json
+
+# Sample data processing
+data = {'name': ['Alice', 'Bob', 'Charlie'], 'age': [25, 30, 35]}
+df = pd.DataFrame(data)
+
+print("Data processing results:")
+print(df.describe())
+print(f"Average age: {df['age'].mean()}")`;
+     }
+
+     if (shouldGenerateCode) {
+       // Add executable code part
+       const executablePart: CodeExecutionPart = {
+         executableCode: {
+           language: 'PYTHON',
+           code: codeToGenerate
+         }
+       };
+       parts.push(executablePart as Part);
+
+       // Execute the code and add result
+       const result = this.simulateCodeExecution(codeToGenerate);
+       const resultPart: CodeExecutionResultPart = {
+         codeExecutionResult: result
+       };
+       parts.push(resultPart as Part);
+     }
+
+     return {
+       ...response,
+       candidates: [{
+         ...response.candidates[0],
+         content: {
+           ...response.candidates[0].content,
+           parts
+         }
+       }]
+     };
+   }
 } 
